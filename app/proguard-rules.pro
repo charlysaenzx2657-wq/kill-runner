@@ -1,0 +1,2 @@
+-keep class com.killrunner.** { *; }
+-keepattributes *Annotation*
