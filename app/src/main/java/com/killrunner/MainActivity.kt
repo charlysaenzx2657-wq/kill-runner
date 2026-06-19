@@ -28,14 +28,20 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        binding = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(binding.root)
-        setSupportActionBar(binding.toolbar)
-
-        prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-
-        restoreSelectedApp()
-        setupListeners()
+        try {
+            binding = ActivityMainBinding.inflate(layoutInflater)
+            setContentView(binding.root)
+            setSupportActionBar(binding.toolbar)
+            prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            restoreSelectedApp()
+            setupListeners()
+        } catch (e: Exception) {
+            android.app.AlertDialog.Builder(this)
+                .setTitle("Error al iniciar")
+                .setMessage(e.toString())
+                .setPositiveButton("OK", null)
+                .show()
+        }
     }
 
     private fun restoreSelectedApp() {
@@ -51,7 +57,6 @@ class MainActivity : AppCompatActivity() {
             val intent = Intent(this, SelectAppActivity::class.java)
             startActivityForResult(intent, REQUEST_SELECT_APP)
         }
-
         binding.btnLaunch.setOnClickListener {
             val pkg = prefs.getString(KEY_PACKAGE, null) ?: return@setOnClickListener
             launchAndClean(pkg)
@@ -64,10 +69,7 @@ class MainActivity : AppCompatActivity() {
         if (requestCode == REQUEST_SELECT_APP && resultCode == RESULT_OK) {
             val pkg = data?.getStringExtra(SelectAppActivity.EXTRA_PACKAGE) ?: return
             val name = data.getStringExtra(SelectAppActivity.EXTRA_APP_NAME) ?: return
-            prefs.edit()
-                .putString(KEY_PACKAGE, pkg)
-                .putString(KEY_APP_NAME, name)
-                .apply()
+            prefs.edit().putString(KEY_PACKAGE, pkg).putString(KEY_APP_NAME, name).apply()
             updateSelectedAppUI(pkg, name)
         }
     }
@@ -76,7 +78,6 @@ class MainActivity : AppCompatActivity() {
         binding.tvAppName.text = name
         binding.tvAppPackage.text = pkg
         binding.btnLaunch.isEnabled = true
-
         try {
             val icon: Drawable = packageManager.getApplicationIcon(pkg)
             binding.imgSelectedApp.setImageDrawable(icon)
@@ -88,35 +89,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun launchAndClean(protectedPackage: String) {
-        // Mostrar estado
         binding.cardStatus.visibility = View.VISIBLE
         binding.tvStatus.text = getString(R.string.cleaning)
         binding.btnLaunch.isEnabled = false
-
         val executor = Executors.newSingleThreadExecutor()
         val handler = Handler(Looper.getMainLooper())
-
         executor.execute {
-            // 1. Lanzar la app protegida primero
-            handler.post {
-                launchApp(protectedPackage)
-            }
-
-            // 2. Esperar un momento para que la app arranque
+            handler.post { launchApp(protectedPackage) }
             Thread.sleep(800)
-
-            // 3. Matar procesos en background
             val result = killBackgroundProcesses(protectedPackage)
-
             handler.post {
-                // Actualizar UI con resultados
                 binding.progressBar.visibility = View.GONE
                 binding.tvStatus.text = getString(R.string.done)
                 binding.tvKilledCount.text = result.first.toString()
                 binding.tvRamFreed.text = formatRam(result.second)
                 binding.btnLaunch.isEnabled = true
-
-                // Ocultar status después de 3s
                 Handler(Looper.getMainLooper()).postDelayed({
                     binding.cardStatus.visibility = View.GONE
                     binding.progressBar.visibility = View.VISIBLE
@@ -127,72 +114,44 @@ class MainActivity : AppCompatActivity() {
 
     private fun launchApp(packageName: String) {
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-        if (launchIntent != null) {
-            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
-            startActivity(launchIntent)
+        launchIntent?.apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+            startActivity(this)
         }
     }
 
     private fun killBackgroundProcesses(protectedPackage: String): Pair<Int, Long> {
         val activityManager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        val pm = packageManager
-
-        // RAM antes
         val memBefore = getAvailableRam()
-
-        // Obtener todos los procesos instalados
-        val installedApps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
+        val installedApps = packageManager.getInstalledApplications(PackageManager.GET_META_DATA)
         var killedCount = 0
-
         for (app in installedApps) {
             val pkg = app.packageName
-            // No matar: nuestra app, la app protegida, el sistema
-            if (pkg == protectedPackage ||
-                pkg == packageName ||
-                isSystemCritical(pkg)) {
-                continue
-            }
+            if (pkg == protectedPackage || pkg == packageName || isSystemCritical(pkg)) continue
             try {
                 activityManager.killBackgroundProcesses(pkg)
                 killedCount++
-            } catch (e: Exception) {
-                // Ignorar si no se puede matar
-            }
+            } catch (e: Exception) { }
         }
-
-        // RAM después
         Thread.sleep(300)
-        val memAfter = getAvailableRam()
-        val freed = maxOf(0L, memAfter - memBefore)
-
+        val freed = maxOf(0L, getAvailableRam() - memBefore)
         return Pair(killedCount, freed)
     }
 
     private fun isSystemCritical(pkg: String): Boolean {
-        val critical = listOf(
-            "android",
-            "com.android.systemui",
-            "com.android.phone",
-            "com.android.launcher",
-            "com.android.settings",
-            "com.android.inputmethod"
-        )
-        return critical.any { pkg.startsWith(it) }
+        return listOf("android", "com.android.systemui", "com.android.phone",
+            "com.android.launcher", "com.android.settings", "com.android.inputmethod")
+            .any { pkg.startsWith(it) }
     }
 
     private fun getAvailableRam(): Long {
-        val activityManager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        val memInfo = ActivityManager.MemoryInfo()
-        activityManager.getMemoryInfo(memInfo)
-        return memInfo.availMem
+        val mi = ActivityManager.MemoryInfo()
+        (getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(mi)
+        return mi.availMem
     }
 
     private fun formatRam(bytes: Long): String {
-        return if (bytes < 1024 * 1024) {
-            "${bytes / 1024} KB"
-        } else {
-            val mb = bytes / (1024.0 * 1024.0)
-            String.format("%.0f MB", mb)
-        }
+        return if (bytes < 1024 * 1024) "${bytes / 1024} KB"
+        else String.format("%.0f MB", bytes / (1024.0 * 1024.0))
     }
 }
